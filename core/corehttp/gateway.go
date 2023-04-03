@@ -28,20 +28,9 @@ import (
 
 func GatewayOption(paths ...string) ServeOption {
 	return func(n *core.IpfsNode, _ net.Listener, mux *http.ServeMux) (*http.ServeMux, error) {
-		cfg, err := n.Repo.Config()
+		gwConfig, err := getGatewayConfig(n)
 		if err != nil {
 			return nil, err
-		}
-
-		headers := make(map[string][]string, len(cfg.Gateway.HTTPHeaders))
-		for h, v := range cfg.Gateway.HTTPHeaders {
-			headers[http.CanonicalHeaderKey(h)] = v
-		}
-
-		gateway.AddAccessControlHeaders(headers)
-
-		gwConfig := gateway.Config{
-			Headers: headers,
 		}
 
 		gwAPI, err := newGatewayBackend(n)
@@ -65,7 +54,7 @@ func GatewayOption(paths ...string) ServeOption {
 
 func HostnameOption() ServeOption {
 	return func(n *core.IpfsNode, _ net.Listener, mux *http.ServeMux) (*http.ServeMux, error) {
-		cfg, err := n.Repo.Config()
+		gwConfig, err := getGatewayConfig(n)
 		if err != nil {
 			return nil, err
 		}
@@ -75,9 +64,8 @@ func HostnameOption() ServeOption {
 			return nil, err
 		}
 
-		publicGateways := convertPublicGateways(cfg.Gateway.PublicGateways)
 		childMux := http.NewServeMux()
-		mux.HandleFunc("/", gateway.WithHostname(childMux, gwAPI, publicGateways, cfg.Gateway.NoDNSLink).ServeHTTP)
+		mux.HandleFunc("/", gateway.WithHostname(gwConfig, gwAPI, childMux).ServeHTTP)
 		return childMux, nil
 	}
 }
@@ -212,6 +200,28 @@ var defaultKnownGateways = map[string]*gateway.Specification{
 	"localhost": subdomainGatewaySpec,
 }
 
+func getGatewayConfig(n *core.IpfsNode) (gateway.Config, error) {
+	cfg, err := n.Repo.Config()
+	if err != nil {
+		return gateway.Config{}, err
+	}
+
+	headers := make(map[string][]string, len(cfg.Gateway.HTTPHeaders))
+	for h, v := range cfg.Gateway.HTTPHeaders {
+		headers[http.CanonicalHeaderKey(h)] = v
+	}
+	gateway.AddAccessControlHeaders(headers)
+
+	gwConfig := gateway.Config{
+		Headers:        headers,
+		TrustedMode:    !cfg.Gateway.OnlyTrustless.WithDefault(config.DefaultOnlyTrustless),
+		NoDNSLink:      cfg.Gateway.NoDNSLink,
+		PublicGateways: convertPublicGateways(cfg.Gateway.PublicGateways),
+	}
+
+	return gwConfig, nil
+}
+
 func convertPublicGateways(publicGateways map[string]*config.GatewaySpec) map[string]*gateway.Specification {
 	gws := map[string]*gateway.Specification{}
 
@@ -234,6 +244,7 @@ func convertPublicGateways(publicGateways map[string]*config.GatewaySpec) map[st
 			NoDNSLink:     gw.NoDNSLink,
 			UseSubdomains: gw.UseSubdomains,
 			InlineDNSLink: gw.InlineDNSLink.WithDefault(config.DefaultInlineDNSLink),
+			TrustedMode:   !gw.OnlyTrustless.WithDefault(config.DefaultOnlyTrustless),
 		}
 	}
 
